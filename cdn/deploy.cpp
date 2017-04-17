@@ -1,0 +1,601 @@
+#include "deploy.h"
+#include <stdio.h>
+#include "iostream"
+#include "fstream"
+#include "vector"
+#include "string.h"
+#include "algorithm"
+#include "time.h"
+#include "stdlib.h"
+using namespace std;
+
+char result[65536];
+
+class RoadNode {
+public:
+	vector<int> child;//路径上的下一个节点
+	vector<int> childcost;//孩子节点的花费
+	vector<int> father;
+	unsigned int cost;//该点负载
+};
+
+unsigned int NodeNum, LinkNum, CostNum, ServeCost;
+//以二位数组形式存储地图，由于每条链路有两个值，
+//所以最内层也是一个数组，第一个值为带宽，第二个为单位租用费
+//若两个节点之间不相连，则值全为0，unsigned int默认值
+vector<vector<vector<int>>> Net, TestNet, NetTemp;
+//将消费节点单独存放，内部数组有两个值，第一个为相连网络节点ID，第二个为视频带宽消耗
+vector<unsigned int> CostNode;
+//待处理的节点，内部数组为一串路径节点ID，每条路径有一个队列，每处理完一个节点吐一个
+vector<vector<unsigned int>> NeedHandle;
+vector<vector<unsigned int>> NeedHandleTemp;
+//当前确定的服务器，数组编号为ID，值为服务器负载
+vector<unsigned int> Server;
+//探头出来的点，数组编号为ID，值为该点负载
+vector<unsigned int> New;
+//每条路径的花费
+vector<unsigned int> RoadCost;
+//头
+vector<unsigned int> hand;
+//每个消费节点一条路径路径
+vector<vector<RoadNode>> Road;
+vector<vector<RoadNode>> RoadTemp;
+//每次使用前必须对其赋值，全局使用的中间变量
+int LineNum;
+int temp;
+int sumCost = 0;
+unsigned int ServerCount = 0;
+
+//v中第一个元素是否存在值为p的元素
+unsigned int FindFirst(unsigned int p, vector<vector<unsigned int>> &v) {
+	for (unsigned int i = 0; i < v.size(); ++i) {
+		if (v[i][0] == p) {
+			return i;
+		}
+	}
+	return -1;
+}
+
+//在Net中某一行元素中寻找最小的元素（0以外）
+int RoadFindMin(vector<vector<int>> &v, vector<RoadNode> &visited) {
+	unsigned int Min = 0, j = 0;
+	for (unsigned int i = 0; i < v.size(); ++i) {
+		if (visited[i].cost != 0 || find(visited[i].child.begin(), visited[i].child.end(), i) != visited[i].child.end()|| v[i][0] == 0) {
+			if (i == v.size() - 1 && Min == 0) {
+				return -1;
+			}
+			continue;
+		}else if (Min == 0) {
+			Min = v[i][1];
+			j = i;
+		}else if (v[i][1] < Min) {
+			Min = v[i][1];
+			j = i;
+		}
+	}
+	return j;
+}
+
+int FindMin(vector<vector<unsigned int>> &v, vector<RoadNode> &visited) {
+	unsigned int Min = 0, j = 0;
+	for (unsigned int i = 0; i < v.size(); ++i) {
+		if (visited[i].cost != 0 || v[i][0] == 0) {
+			if (i == v.size() - 1 && Min == 0) {
+				return -1;
+			}
+			continue;
+		}else if (Min == 0) {
+			Min = v[i][1];
+			j = i;
+		}else if (v[i][1] < Min) {
+			Min = v[i][1];
+			j = i;
+		}
+	}
+	return j;
+}
+
+//在Net中某一行元素中寻找最大的元素（0以外）
+int FindMax(vector<vector<int>> &v, vector<RoadNode> &visited) {
+	unsigned int Max = 0, j = 0;
+	for (unsigned int i = 0; i < v.size(); ++i) {
+		if (visited[i].cost != 0 || v[i][0] == 0) {
+			if (i == v.size() - 1 && Max == 0) {
+				return -1;
+			}
+			continue;
+		}else if (Max == 0) {
+			Max = v[i][0];
+			j = i;
+		}else if (v[i][0] > Max) {
+			Max = v[i][0];
+			j = i;
+		}
+	}
+	return j;
+}
+
+//v1使用v2的带宽,若v2带宽足够则返回v1的值否则返回带宽的值
+unsigned int ReduceB(unsigned int &v1, vector<int> &v2) {
+	unsigned int temp = 0;
+	if (v1 >= v2[0]) {//v2带宽不够
+		v1 -= v2[0];
+		temp = v2[0];
+		v2[0] = 0;
+		return temp;
+	}else {//v2带宽足够
+		v2[0] -= v1;
+		temp = v1;
+		v1 = 0;
+		return temp;
+	}
+}
+
+void type1(vector<unsigned int> &Server, vector<vector<vector<int>>> &Net) {
+	while (1) {
+		for (unsigned int i = 0; i < Road.size(); ++i) {
+			if (NeedHandle[i].size() == 0) {
+				continue;
+			}
+			unsigned int ThisID = NeedHandle[i][0]; unsigned int ThisStream = Road[i][ThisID].cost;
+			//cout << "ThisID = " << ThisID << endl;
+			//if (ThisID == 21) system("pause");
+			if (Server[ThisID] > CostNode[ThisID]) {
+				New[ThisID] = 0;
+				NeedHandle[i].erase(NeedHandle[i].begin());
+				continue;
+			}
+			Server[ThisID] = 0;
+			for (unsigned int j = 0; j < NodeNum && ThisStream > 0; ++j) {
+				if (Net[ThisID][j][0] != 0 && Server[j]) {//找服务器
+					Road[i][j].cost = ReduceB(ThisStream, Net[ThisID][j]);
+					Road[i][ThisID].child.push_back(j);
+					Road[i][j].father.push_back(ThisID);
+					Server[j] += Road[i][j].cost;
+				}
+			}
+			for (unsigned int j = 0; j < NodeNum && ThisStream > 0; ++j) {
+				if (Net[ThisID][j][0] != 0 && New[j]) {//找探头出来的节点
+					Road[i][j].cost = ReduceB(ThisStream, Net[ThisID][j]);
+					Road[i][ThisID].child.push_back(j);
+					Road[i][j].father.push_back(ThisID);
+					Server[j] = Road[i][j].cost + New[j];
+					New[j] = 0;
+				}
+			}
+			unsigned int ChildNum = Road[i][ThisID].child.size();
+			while (ThisStream > 0) {
+				temp = FindMax(Net[ThisID], Road[i]);
+				if (temp == -1) {
+					if (CostNode[ThisID] != 0) Server[ThisID] = CostNode[ThisID] + 1;
+					for (unsigned int k = 0; k < Road[i][ThisID].child.size(); ++k) {
+						if (New[Road[i][ThisID].child[k]] > 0) New[Road[i][ThisID].child[k]] = 0;;
+						if (Server[Road[i][ThisID].child[k]] > 0) Server[Road[i][ThisID].child[k]] -= Road[i][Road[i][ThisID].child[k]].cost;
+						Net[ThisID][Road[i][ThisID].child[k]][0] += Road[i][Road[i][ThisID].child[k]].cost;
+						Road[i][Road[i][ThisID].child[k]].cost = 0;
+					}
+					for (unsigned int k = 0; k < Road[i][ThisID].child.size() - ChildNum; ++k) {
+						NeedHandle[i].pop_back();
+					}
+					Road[i][ThisID].child.erase(Road[i][ThisID].child.begin(), Road[i][ThisID].child.end());
+					ThisStream = 0;
+					break;
+				}
+				Road[i][temp].cost = ReduceB(ThisStream, Net[ThisID][temp]);
+				Road[i][ThisID].child.push_back(temp);
+				Road[i][temp].father.push_back(ThisID);
+				New[temp] = Road[i][temp].cost;
+				NeedHandle[i].push_back(temp);
+				if (New[ThisID] != 0) New[ThisID] -= Road[i][temp].cost;
+			}
+			NeedHandle[i].erase(NeedHandle[i].begin());
+			//ShowLog();
+		}
+		temp = 0;
+		for (unsigned int i = 0; i < NeedHandle.size(); ++i) {
+			temp += NeedHandle[i].size();
+		}
+		if (temp == 0) break;
+	}
+}
+
+vector<unsigned int> ReduceServer(vector<unsigned int> Server, vector<vector<vector<int>>> &Net) {
+	for (int i = 0; i < Server.size(); ++i) {
+		if (Server[i] == 0) continue;
+		for (int j = 0; j < Server.size(); ++j) {
+			if (Server[j] == 0) continue;
+			if (Net[i][j][0] > Server[i]) {
+				Server[j] += Server[i];
+				Server[i] = 0;
+			}
+		}
+	}
+	for (int i = 0; i < Server.size(); ++i) {
+		if (Server[i] == 0) continue;
+			for (int k = 0; k < NodeNum; ++k) {
+				if (Net[i][k][0] > Server[i]) {
+					for (int l = 0; l < NodeNum; ++l) {
+						if (Server[l] != 0 && l != k && Net[l][k][0] > Server[l]) {
+							Server[k] = Server[i] + Server[l];
+							Server[i] = 0;
+							Server[l] = 0;
+						}
+					}
+				}
+			}
+	}
+	return Server;
+}
+
+vector<unsigned int> ReduceServer(vector<unsigned int> Server, vector<vector<vector<int>>> &Net, vector<double> n) {
+	for (int i = 0; i < Server.size(); ++i) {
+		if (Server[i] == 0) continue;
+		for (int j = 0; j < Server.size(); ++j) {
+			if (Server[j] == 0) continue;
+			if (Net[i][j][0] > Server[i] * n[0]) {
+				Server[j] += Server[i];
+				Server[i] = 0;
+			}
+		}
+	}
+	for (int i = 0; i < Server.size(); ++i) {
+		if (Server[i] == 0) continue;
+		for (int k = 0; k < NodeNum; ++k) {
+			if (Net[i][k][0] > Server[i] * n[1]) {
+				for (int l = 0; l < NodeNum; ++l) {
+					if (Server[l] != 0 && l != k && Net[l][k][0] > Server[l] * n[2]) {
+						Server[k] = Server[i] + Server[l];
+						Server[i] = 0;
+						Server[l] = 0;
+					}
+				}
+			}
+		}
+	}
+	return Server;
+}
+
+vector<vector<RoadNode>> 
+FindWay(vector<vector<RoadNode>> RoadTemp, 
+			vector<vector<unsigned int>> NeedHandleTemp, 
+				vector<vector<vector<int>>> NetTemp,
+					vector<unsigned int> &Server) {
+	for (unsigned int r = 0; r < RoadTemp.size(); ++r) {
+		while(NeedHandleTemp[r].size() != 0) {
+			unsigned int ThisID = NeedHandleTemp[r][0], ThisStream = RoadTemp[r][ThisID].cost;
+			//cout << ThisID << endl;
+			//if (ThisID == 305) system("pause");
+			if (Server[ThisID] != 0) {
+				NeedHandleTemp[r].erase(NeedHandleTemp[r].begin());
+				continue;
+			}
+			for (unsigned int j = 0; j < NodeNum && ThisStream > 0; ++j) {
+				if (NetTemp[ThisID][j][0] > 0 && Server[j]) {//找服务器
+					temp = ReduceB(ThisStream, NetTemp[ThisID][j]);
+					//RoadTemp[r][j].cost += temp;
+					Server[j] += temp;
+					//RoadTemp[r][j].MyOrder.push_back(RoadTemp[r][ThisID].child.size());
+					RoadTemp[r][j].father.push_back(ThisID);
+					RoadTemp[r][ThisID].child.push_back(j);
+					RoadTemp[r][ThisID].childcost.push_back(temp);
+				}
+			}
+			unsigned int ChildNum = RoadTemp[r][ThisID].child.size();
+			while (ThisStream > 0) {
+				temp = RoadFindMin(NetTemp[ThisID], RoadTemp[r]);
+				//if (ThisID == 118 && temp == 277) system("pause");
+				/*unsigned int ChildFlag = 0;
+				for (unsigned int k = 0; k < RoadTemp[r][ThisID].child.size(); ++k) {
+					if (RoadTemp[r][ThisID].child[k] == temp) {
+						ChildFlag = 1;
+						break;
+					}
+				}
+				if (ChildFlag == 1) continue;*/
+				if (temp == -1) {
+					for (unsigned int k = 0; k < RoadTemp[r][ThisID].child.size(); ++k) {//删除其孩子节点流量
+						NetTemp[ThisID][RoadTemp[r][ThisID].child[k]][0] += RoadTemp[r][ThisID].childcost[k];
+						//RoadTemp[r][RoadTemp[r][ThisID].child[k]].cost -= RoadTemp[r][ThisID].childcost[k]; 
+						RoadTemp[r][RoadTemp[r][ThisID].child[k]].father.erase(find(RoadTemp[r][RoadTemp[r][ThisID].child[k]].father.begin(), RoadTemp[r][RoadTemp[r][ThisID].child[k]].father.end(), ThisID));
+					}
+					for (unsigned int k = 0; k < RoadTemp[r][ThisID].child.size() - ChildNum; ++k) {
+						NeedHandleTemp[r].pop_back();
+					}
+					RoadTemp[r][ThisID].child.erase(RoadTemp[r][ThisID].child.begin(), RoadTemp[r][ThisID].child.end());
+					RoadTemp[r][ThisID].childcost.erase(RoadTemp[r][ThisID].childcost.begin(), RoadTemp[r][ThisID].childcost.end());
+					if (RoadTemp[r][ThisID].father.size() != 0 && RoadTemp[r][ThisID].father[0] == 1001) {
+						Server[ThisID] += CostNode[ThisID];
+						NeedHandleTemp[r].erase(NeedHandleTemp[r].begin(), NeedHandleTemp[r].end());
+						break;
+					}
+					
+					for (int k = 0; k < RoadTemp[r][RoadTemp[r][ThisID].father[0]].child.size(); ++k) {
+						if (RoadTemp[r][RoadTemp[r][ThisID].father[0]].child[k] == ThisID) {
+							NetTemp[RoadTemp[r][ThisID].father[0]][ThisID][0] += RoadTemp[r][RoadTemp[r][ThisID].father[0]].childcost[k];
+							RoadTemp[r][RoadTemp[r][ThisID].father[0]].cost += RoadTemp[r][RoadTemp[r][ThisID].father[0]].childcost[k];
+							break;
+						}
+					}
+					//NetTemp[RoadTemp[r][ThisID].father[0]][ThisID][0] += RoadTemp[r][ThisID].cost;
+					//RoadTemp[r][RoadTemp[r][ThisID].father[0]].cost += RoadTemp[r][ThisID].cost;
+					//NeedHandleTemp[r].push_back(RoadTemp[r][ThisID].father[0]);
+					RoadTemp[r][ThisID].cost = 0;
+					break;
+				}
+				RoadTemp[r][temp].cost += ReduceB(ThisStream, NetTemp[ThisID][temp]);
+				RoadTemp[r][ThisID].child.push_back(temp);
+				RoadTemp[r][ThisID].childcost.push_back(RoadTemp[r][temp].cost);
+				RoadTemp[r][temp].father.push_back(ThisID);
+				NeedHandleTemp[r].push_back(temp);
+			}
+			if(NeedHandleTemp[r].size() != 0) NeedHandleTemp[r].erase(NeedHandleTemp[r].begin());
+		}
+	}
+	return RoadTemp;
+}
+
+int CountServer(vector<unsigned int> server){
+	int counter = 0;
+	for (int i = 0; i < server.size(); ++i){
+		if (server[i] != 0){
+			counter++;
+		}
+	}
+	if(CostNum == 72){
+		sumCost += counter * 600;
+	}else if(CostNum == 135){
+		sumCost += counter * 800;
+	}else{
+		sumCost += counter * 1000;
+	}
+	return counter;
+}
+
+int 
+EnoughRoad(unsigned int j, 
+		unsigned int num, 
+			int fathernum, 
+				int childnum, 
+					vector<vector<RoadNode>> &RoadTemp, 
+						vector<vector<vector<int>>> &TestNet) {
+	if (RoadTemp[j][num].child.size() == 0) {
+		if (RoadTemp[j][num].father[0] == 1001) {return 1;}
+		else {
+			temp = fathernum;
+			TestNet[num][temp][0] -= RoadTemp[j][fathernum].childcost[childnum];
+			sumCost += TestNet[num][temp][1] * RoadTemp[j][fathernum].childcost[childnum];
+			if (!(TestNet[num][temp][0] >= 0)) {
+				return 0;
+			}
+			do {
+				if (RoadTemp[j][temp].father[0] != 1001) {
+					TestNet[temp][RoadTemp[j][temp].father[0]][0] -= RoadTemp[j][fathernum].childcost[childnum];
+					sumCost += TestNet[temp][RoadTemp[j][temp].father[0]][1] * RoadTemp[j][fathernum].childcost[childnum];
+					if (!(TestNet[temp][RoadTemp[j][temp].father[0]][0] >= 0)) {
+						return 0;
+					}
+				}
+				temp = RoadTemp[j][temp].father[0];
+			} while (temp != 1001);
+		}
+		return 1;
+	}
+	for (unsigned int i = 0; i < RoadTemp[j][num].child.size(); ++i) {
+		if (!EnoughRoad(j, RoadTemp[j][num].child[i], num, i, RoadTemp, TestNet)) return 0;//RoadTemp[j][num].child[i]孩子节点编号， num父亲节点编号
+	}
+	return 1;
+}
+
+int 
+Enough(vector<vector<RoadNode>> &RoadTemp, vector<vector<vector<int>>> &TestNet) {
+	sumCost = 0;
+	for (unsigned int i = 0; i < CostNum; ++i) {
+		if (!EnoughRoad(i, hand[i], hand[i], 0, RoadTemp, TestNet)) return 0;
+	}
+	return 1;
+}
+
+int sum = 0;
+void CoutRoad(unsigned int j, 
+		unsigned int num, 
+		int fathernum, 
+		int childnum, 
+		vector<vector<RoadNode>> &RoadTemp, 
+		vector<vector<vector<int>>> &TestNet) {//num孩子节点编号，fathernum父亲节点编号
+	if (RoadTemp[j][num].child.size() == 0) {
+			char rtemp[1000];
+			if (RoadTemp[j][num].father[0] == 1001) {
+				sum += 1;
+				sprintf(rtemp, "%d %d %d\n", num, j, CostNode[num]);
+				strcat(result, rtemp);
+			}
+			else {
+				sum += 1;
+				//cout << "sum = " << sum << endl;
+				sprintf(rtemp, "%d ", num);
+				strcat(result, rtemp);
+				temp = fathernum;
+				do {
+					sprintf(rtemp, "%d ", temp);
+					strcat(result, rtemp);
+					temp = RoadTemp[j][temp].father[0];
+				} while (temp != 1001);
+				sprintf(rtemp, "%d %d\n", j, RoadTemp[j][fathernum].childcost[childnum]);
+				strcat(result, rtemp);
+			}
+	}
+	for (unsigned int i = 0; i < RoadTemp[j][num].child.size(); ++i) {
+		CoutRoad(j, RoadTemp[j][num].child[i], num, i, RoadTemp, TestNet);//RoadTemp[j][num].child[i]孩子节点编号， num父亲节点编号
+	}
+}
+
+void ShowRoadTemp(vector<vector<RoadNode>> &RoadTemp, vector<vector<vector<int>>> &TestNet) {
+	for (unsigned int i = 0; i < CostNum; ++i) {
+		CoutRoad(i, hand[i], hand[i], 0, RoadTemp, TestNet);
+	}
+	cout << "sum = " << sum << endl;
+}
+
+void SimpleInitNet(char * topo[MAX_EDGE_NUM]){
+	sscanf(topo[0], "%d %d %d", &NodeNum, &LinkNum, &CostNum);
+	vector<vector<int>> SimpleCost;
+	int CostID, NodeID, BandCost;
+	for (unsigned int i = 0; i < CostNum; ++i){
+		sscanf(topo[i + LinkNum + 5], "%d %d %d", &CostID, &NodeID, &BandCost);
+		SimpleCost.push_back({NodeID, BandCost});
+	}
+	sprintf(result, "%d\n\n", CostNum);
+	for (unsigned int i = 0; i < CostNum; ++i){
+			char temp[100];
+			sprintf(temp, "%d %d %d\n", SimpleCost[i][0], i, SimpleCost[i][1]);
+			strcat(result, temp);
+	}
+}
+
+void InitNet(char * topo[MAX_EDGE_NUM]){
+	sscanf(topo[0], "%d %d %d", &NodeNum, &LinkNum, &CostNum);
+	sscanf(topo[2], "%d", &ServeCost);
+	
+	Server = vector<unsigned int>(NodeNum);
+	New = vector<unsigned int>(NodeNum);
+	CostNode = vector<unsigned int>(NodeNum);
+	Road = vector<vector<RoadNode>>(CostNum, vector<RoadNode>(NodeNum));
+	RoadTemp = Road;
+	NeedHandle = vector<vector<unsigned int>>(CostNum);
+	
+	//构建n*n矩阵
+	for (unsigned int i = 0; i < NodeNum; ++i){
+		vector<vector<int>> Node(NodeNum, {0, 0});
+		Net.push_back(Node);
+	}
+	
+	//若矩阵中某一坐标有值（两个节点相连），第一个值为带宽，第二个值为单位租用费
+	//矩阵是右上三角与左下三角对称的，方便遍历
+	int LinkBegin, LinkEnd, BandWidth, PerCost;
+	for(unsigned int i = 0; i < LinkNum; ++i){
+		sscanf(topo[i + 4], "%d %d %d %d", &LinkBegin, &LinkEnd, &BandWidth, &PerCost);
+		//cout << LinkBegin << " " << LinkEnd << " " <<  BandWidth << " " <<  PerCost << endl;
+		Net[LinkBegin][LinkEnd][0] = (BandWidth);
+		Net[LinkBegin][LinkEnd][1] = (PerCost);
+		Net[LinkEnd][LinkBegin][0] = (BandWidth);
+		Net[LinkEnd][LinkBegin][1] = (PerCost);
+	}
+	NetTemp = Net;
+	TestNet = Net;
+	int CostID, NodeID, BandCost;
+	for (unsigned int i = 0; i < CostNum; ++i){
+		sscanf(topo[i + LinkNum + 5], "%d %d %d", &CostID, &NodeID, &BandCost);
+		//cout << NodeID << " " << BandCost << endl;
+		CostNode[NodeID] = BandCost;
+		Server[NodeID] = BandCost;
+		Road[i][NodeID].cost = BandCost;
+		RoadTemp[i][NodeID].cost = BandCost;
+		RoadTemp[i][NodeID].father.push_back(1001);
+		hand.push_back(NodeID);
+		NeedHandle[i].push_back(NodeID);
+	}
+	NeedHandleTemp = NeedHandle;
+}
+
+
+//你要完成的功能总入口
+void deploy_server(char * topo[MAX_EDGE_NUM], int line_num,char * filename)
+{
+	int start = time((time_t*)NULL);	
+	srand((int)time(NULL));
+	char endresult[65535];
+	char * topo_file;
+	InitNet(topo);
+	vector<vector<RoadNode>> road = RoadTemp;
+	vector<vector<vector<int>>> net1 = TestNet, net2 = TestNet, net3;
+	vector<unsigned int> server = Server, server2;
+	vector<vector<unsigned int>> need = NeedHandleTemp;
+	type1(server, net1);
+	server = ReduceServer(server, net1);
+	vector<double> n(3, 1), bestn;
+	int counter = 0;
+	int minSumCost = 360000;
+	while (1) {
+		//cout << n[0] << "\t" << n[1] << "\t" << n[2] << endl;
+		server2 = ReduceServer(server, net1, n);
+		road = FindWay(RoadTemp, need, net2, server2);
+		net3 = TestNet;
+		if (Enough(road, net3) && n[counter] > 0.001) {
+			CountServer(server2);
+			//cout << "sumCost = " << sumCost << " minSumCost = " << minSumCost << endl;
+			if(sumCost < minSumCost) {
+				bestn = n;
+				minSumCost = sumCost;
+			}
+			n[counter] -= 0.1;
+		}else {
+			n[counter] += 0.1;
+			counter++;
+			if (counter == 3) break;
+		}
+	}
+	server2 = ReduceServer(server, net1, bestn);
+	road = FindWay(RoadTemp, need, net2, server2);
+	net3 = TestNet;
+	Enough(road, net3);
+	int ServerNum = CountServer(server2);
+	cout << "minSumCost = " << sumCost << endl;
+	while(1){
+		server = vector<unsigned int>(NodeNum, 0);
+		for(int i = 0; i < ServerNum; ++i){
+			server[rand() % NodeNum] = 1;
+		}
+		road = FindWay(RoadTemp, need, net2, server);
+		net3 = TestNet;
+		if (Enough(road, net3)){
+			CountServer(server);
+			//cout << rand() % ServerNum << " " << sumCost << endl;
+			if(sumCost < minSumCost){
+				minSumCost = sumCost;
+				server2 = server;
+				cout << "New minSumCost = " << minSumCost << endl;
+				break;
+			}
+		}
+		if ((time((time_t*)NULL) - start) % 100 == 0){
+			cout << time((time_t*)NULL) - start << " " << sumCost << endl;
+			//break;
+		}
+	}
+	road = FindWay(RoadTemp, need, net2, server2);
+	ShowRoadTemp(road, TestNet);
+	sprintf(endresult, "%d\n\n", sum);
+	strcat(endresult, result);
+	//printf("%s", endresult);
+	topo_file = endresult;
+	write_result(topo_file, filename);
+
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
